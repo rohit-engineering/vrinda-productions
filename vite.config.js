@@ -2,6 +2,6 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
 export default defineConfig({
-  base: '/vrinda-productions/',  // <-- your GitHub repo name
+  base: process.env.VERCEL ? '/' : '/vrinda-productions/',
   plugins: [vue()]
 })

@@ -14,7 +14,7 @@ const routes = [
 ]
 
 const router = createRouter({
-  history: createWebHistory('/vrinda-productions/'),
+  history: createWebHistory(import.meta.env.BASE_URL), // ✅ smarter and dynamic
   routes
 })
 
