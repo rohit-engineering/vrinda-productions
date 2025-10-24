@@ -253,11 +253,13 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
 import { supabase } from '../supabase'
 import { useRouter } from 'vue-router'
 
 const router = useRouter()
+
+// --- State ---
 const products = ref([])
 const categories = ref([])
 const selectCategory = ref('All')
@@ -266,65 +268,64 @@ const wishlist = ref([])
 const orders = ref([])
 const placeholderImage = 'https://via.placeholder.com/300x300?text=No+Image'
 const alertMessage = ref('')
-// Added `paymentMethod` to capture COD or UPI
 const userDetails = ref({
   name: '',
   email: '',
   phone: '',
   address: '',
-  paymentMethod: 'Cash on Delivery' // default
+  paymentMethod: 'Cash on Delivery'
 })
-
 const sessionValue = ref({ user: null })
 
+// --- Debounced Storage ---
+let saveCartTimeout
+let saveWishlistTimeout
+function saveCartToStorage(){
+  if(!sessionValue.value.user) return
+  clearTimeout(saveCartTimeout)
+  saveCartTimeout = setTimeout(() => {
+    localStorage.setItem('cart_'+sessionValue.value.user.id, JSON.stringify(cart.value))
+  }, 200)
+}
+function saveWishlistToStorage(){
+  if(!sessionValue.value.user) return
+  clearTimeout(saveWishlistTimeout)
+  saveWishlistTimeout = setTimeout(() => {
+    localStorage.setItem('wishlist_'+sessionValue.value.user.id, JSON.stringify(wishlist.value))
+  }, 200)
+}
+
 // --- Computed ---
-const filteredProducts = computed(() =>
-  selectCategory.value === 'All'
-    ? products.value
-    : products.value.filter(p => (p.category||'').toLowerCase() === (selectCategory.value||'').toLowerCase())
-)
+const filteredProducts = computed(() => {
+  const category = selectCategory.value.toLowerCase()
+  if(category === 'all') return products.value
+  return products.value.filter(p => (p.category||'').toLowerCase() === category)
+})
 const cartCount = computed(() => cart.value.reduce((s,i)=> s+(i.qty||0),0))
 const total = computed(() => cart.value.reduce((s,i)=> s+(Number(i.price)||0)*(i.qty||0),0))
 
 // --- Navigation ---
 function redirectLogin(){ router.push('/login') }
 function redirectSignup(){ router.push('/signup') }
-function goToProduct(id){ router.push({name:'ProductDetails', params:{id}}) }
 
-const categorySlider = ref(null)
-
-function scrollCategory(direction = 1) {
-  const container = categorySlider.value
-  if (!container) return
-  const scrollAmount = container.clientWidth * 0.6 // scroll ~60% of visible width
-  container.scrollBy({ left: scrollAmount * direction, behavior: 'smooth' })
-}
-
-
-// --- Modal & Alerts ---
-function openModal(modalId){
-  document.querySelectorAll('.modal.show').forEach(m=> bootstrap.Modal.getInstance(m)?.hide())
-  new bootstrap.Modal(document.getElementById(modalId)).show()
-}
-function showLoginAlert(msg='Please login or signup first!'){
-  alertMessage.value = msg
-  openModal('alertModal')
-}
-
-// --- Helper: Set user details ---
+// --- User Details ---
 function setUserDetails(user){
   userDetails.value.name = user.user_metadata?.full_name || ''
   userDetails.value.email = user.email || ''
 }
 
-// --- Cart & Wishlist with localStorage ---
+// --- Cart & Wishlist ---
 function loadCartFromStorage(){
   if(!sessionValue.value.user) return
   const data = localStorage.getItem('cart_'+sessionValue.value.user.id)
   cart.value = data ? JSON.parse(data) : []
 }
-function saveCartToStorage(){ if(sessionValue.value.user) localStorage.setItem('cart_'+sessionValue.value.user.id, JSON.stringify(cart.value)) }
-function addToCart(p){ 
+function loadWishlistFromStorage(){
+  if(!sessionValue.value.user) return
+  const data = localStorage.getItem('wishlist_'+sessionValue.value.user.id)
+  wishlist.value = data ? JSON.parse(data) : []
+}
+function addToCart(p){
   if(!sessionValue.value.user){ showLoginAlert(); return }
   const existing = cart.value.find(i=>i.id===p.id)
   if(existing) existing.qty++
@@ -338,13 +339,6 @@ function changeQty(item,delta){
   if(cart.value[idx].qty<=0) cart.value.splice(idx,1)
   saveCartToStorage()
 }
-
-function loadWishlistFromStorage(){
-  if(!sessionValue.value.user) return
-  const data = localStorage.getItem('wishlist_'+sessionValue.value.user.id)
-  wishlist.value = data ? JSON.parse(data) : []
-}
-function saveWishlistToStorage(){ if(sessionValue.value.user) localStorage.setItem('wishlist_'+sessionValue.value.user.id, JSON.stringify(wishlist.value)) }
 function toggleWishlist(p){
   if(!sessionValue.value.user){ showLoginAlert(); return }
   const idx = wishlist.value.findIndex(i=>i.id===p.id)
@@ -355,6 +349,7 @@ function toggleWishlist(p){
 function isInWishlist(p){ return wishlist.value.some(i=>i.id===p.id) }
 function removeWishlistItem(item){ wishlist.value = wishlist.value.filter(i=>i.id!==item.id); saveWishlistToStorage() }
 
+// --- Checkout Selected Wishlist ---
 function checkoutSelectedWishlist(){
   if(!sessionValue.value.user){ showLoginAlert(); return }
   const selected = wishlist.value.filter(i=>i.selected)
@@ -373,27 +368,27 @@ function checkoutSelectedWishlist(){
 async function submitOrder(){
   if(!sessionValue.value.user || !cart.value.length) return
   const { name, email, phone, address, paymentMethod } = userDetails.value
-if (!name || !email || !phone || !address || !paymentMethod) {
-  showLoginAlert('All fields and delivery option are required')
-  return
-}
+  if (!name || !email || !phone || !address || !paymentMethod) {
+    showLoginAlert('All fields and delivery option are required')
+    return
+  }
 
   const orderItems = cart.value.map(i=>({id:i.id,title:i.title,price:i.price,qty:i.qty}))
   const totalAmount = orderItems.reduce((sum,i)=>sum+i.price*i.qty,0)
   const order_id = 'ORD-'+Date.now()
   const { error } = await supabase.from('orders').insert([{
-  order_id,
-  user_id: sessionValue.value.user.id,
-  name,
-  email,
-  phone,
-  address,
-  payment_preference: paymentMethod, // 🟢 new field
-  items: orderItems,
-  total: totalAmount,
-  status: 'placed',
-  payment_status: 'pending'
-}])
+    order_id,
+    user_id: sessionValue.value.user.id,
+    name,
+    email,
+    phone,
+    address,
+    payment_preference: paymentMethod,
+    items: orderItems,
+    total: totalAmount,
+    status: 'placed',
+    payment_status: 'pending'
+  }])
 
   if(error){ showLoginAlert('Failed to place order'); return }
   cart.value=[]
@@ -404,6 +399,7 @@ if (!name || !email || !phone || !address || !paymentMethod) {
   openModal('alertModal')
 }
 
+// --- Load Orders ---
 async function loadOrders(){
   if(!sessionValue.value.user) return
   const {data,error} = await supabase.from('orders')
@@ -413,7 +409,6 @@ async function loadOrders(){
   if(error) console.error(error)
   else orders.value = data || []
 }
-
 function openOrders(){ loadOrders(); openModal('orderHistoryModal') }
 function canCancelOrder(o){
   const orderTime = new Date(o.created_at).getTime()
@@ -424,7 +419,6 @@ async function cancelOrder(o){
   const {error} = await supabase.from('orders').update({status:'cancelled'}).eq('order_id',o.order_id)
   if(error) console.error(error); else o.status='cancelled'
 }
-
 async function removeOrderFromView(o){
   if(o.status === 'cancelled'){
     const { error } = await supabase.from('orders').delete().eq('order_id', o.order_id)
@@ -439,13 +433,34 @@ async function logout(){
   cart.value=[]
   wishlist.value=[]
   orders.value=[]
-  userDetails.value = {name:'',email:'',phone:'',address:''}
+  userDetails.value = {name:'',email:'',phone:'',address:'', paymentMethod:'Cash on Delivery'}
   sessionValue.value.user = null
   router.push('/')
 }
 
+// --- Modal & Alerts ---
+function openModal(modalId){
+  document.querySelectorAll('.modal.show').forEach(m => bootstrap.Modal.getInstance(m)?.hide())
+  setTimeout(()=>{ new bootstrap.Modal(document.getElementById(modalId)).show() }, 100)
+}
+function showLoginAlert(msg='Please login or signup first!'){
+  alertMessage.value = msg
+  openModal('alertModal')
+}
+
+// --- Go To Product with Prefetch ---
+async function goToProduct(id){
+  document.querySelectorAll('.modal.show').forEach(m => bootstrap.Modal.getInstance(m)?.hide())
+  // Prefetch
+  await supabase.from('products').select('*').eq('id', id).single()
+  router.push({ name: 'ProductDetails', params: { id } })
+}
+
 // --- Lifecycle ---
 onMounted(async () => {
+  // Remove leftover modal backdrops
+  document.querySelectorAll('.modal-backdrop').forEach(b => b.remove())
+
   const { data: productsData } = await supabase.from('products').select('*').order('id',{ascending:true})
   products.value = productsData || []
 
@@ -457,9 +472,12 @@ onMounted(async () => {
 
   if(sessionValue.value.user){
     setUserDetails(sessionValue.value.user)
-    loadCartFromStorage()
-    loadWishlistFromStorage()
-    loadOrders()
+    // Defer cart/wishlist load for smoother initial render
+    nextTick(()=>{
+      loadCartFromStorage()
+      loadWishlistFromStorage()
+      loadOrders()
+    })
   }
 
   supabase.auth.onAuthStateChange((_event, newSession) => {
@@ -473,11 +491,12 @@ onMounted(async () => {
       cart.value=[]
       wishlist.value=[]
       orders.value=[]
-      userDetails.value = { name:'', email:'', phone:'', address:'' }
+      userDetails.value = { name:'', email:'', phone:'', address:'', paymentMethod:'Cash on Delivery' }
     }
   })
 })
 </script>
+
 
 <style scoped>
 /* === Google Fonts Import === */
@@ -559,6 +578,11 @@ onMounted(async () => {
 .product-tile:hover {
   transform: translateY(-3px);
   box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
+}
+
+.product-tile, .gallery, .tile-caption {
+  position: relative;
+  z-index: 10;
 }
 
 .image-wrapper {
